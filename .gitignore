@@ -1,0 +1,12 @@
+# Compiled binary
+scanner
+/bin/
+
+# Environment variables & secrets
+.env
+
+# Local state tracking queue
+processed_uids.json
+
+# Go workspace files
+go.work
