@@ -30,6 +30,7 @@ type Config struct {
 	NtfyPass      string
 	CheckInterval time.Duration
 	MaxFileSizeMB int64
+	ScanSince     string
 }
 
 const StateFile = "processed_uids.json"
@@ -57,6 +58,7 @@ func loadConfig() Config {
 		NtfyPass:      os.Getenv("NTFY_PASS"),
 		CheckInterval: time.Duration(intervalSec) * time.Second,
 		MaxFileSizeMB: maxSize,
+		ScanSince:     os.Getenv("SCAN_SINCE"),
 	}
 }
 
@@ -175,6 +177,17 @@ func checkEmails(cfg Config) {
 
 	criteria := imap.NewSearchCriteria()
 	criteria.WithoutFlags = []string{imap.DeletedFlag}
+	
+	// Apply date filter if specified in .env
+	if cfg.ScanSince != "" {
+		sinceDate, err := time.Parse("2006-01-02", cfg.ScanSince)
+		if err == nil {
+			criteria.Since = sinceDate
+		} else {
+			log.Printf("Invalid SCAN_SINCE format (%s). Use YYYY-MM-DD. Proceeding without date filter.", cfg.ScanSince)
+		}
+	}
+
 	uids, err := c.Search(criteria)
 	if err != nil {
 		log.Printf("IMAP search error: %v", err)
@@ -188,7 +201,6 @@ func checkEmails(cfg Config) {
 	seqSet := new(imap.SeqSet)
 	seqSet.AddNum(uids...)
 
-	// Define exactly what to fetch: UID, Envelope (Subject), and full Body
 	section := &imap.BodySectionName{}
 	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, section.FetchItem()}
 
@@ -212,7 +224,6 @@ func checkEmails(cfg Config) {
 		matched := false
 		var bodyText strings.Builder
 
-		// Safely get the body reader
 		r := msg.GetBody(section)
 		if r == nil {
 			continue
@@ -275,6 +286,9 @@ func checkEmails(cfg Config) {
 func main() {
 	cfg := loadConfig()
 	log.Println("Go Placement Scanner Started...")
+	if cfg.ScanSince != "" {
+		log.Printf("Only scanning emails from %s onward", cfg.ScanSince)
+	}
 
 	for {
 		checkEmails(cfg)
