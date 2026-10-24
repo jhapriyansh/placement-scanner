@@ -7,12 +7,11 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	imap "github.com/emersion/go-imap"
+	"github.com/emersion/go-imap"
 	imapclient "github.com/emersion/go-imap/client"
 	"github.com/emersion/go-message/mail"
 	"github.com/joho/godotenv"
@@ -20,15 +19,15 @@ import (
 )
 
 type Config struct {
-	ImapServer   string
-	EmailUser    string
-	EmailPass    string
-	MyName       string
-	MyNeoID      string
-	MyRegNo      string
-	NtfyURL      string
-	NtfyUser     string
-	NtfyPass     string
+	ImapServer    string
+	EmailUser     string
+	EmailPass     string
+	MyName        string
+	MyNeoID       string
+	MyRegNo       string
+	NtfyURL       string
+	NtfyUser      string
+	NtfyPass      string
 	CheckInterval time.Duration
 	MaxFileSizeMB int64
 }
@@ -189,11 +188,15 @@ func checkEmails(cfg Config) {
 	seqSet := new(imap.SeqSet)
 	seqSet.AddNum(uids...)
 
+	// Define exactly what to fetch: UID, Envelope (Subject), and full Body
+	section := &imap.BodySectionName{}
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, section.FetchItem()}
+
 	messages := make(chan *imap.Message, 10)
 	done := make(chan error, 1)
 
 	go func() {
-		done <- c.Fetch(seqSet, []string{"UID", imap.FetchEnvelope, imap.FetchBody}, messages)
+		done <- c.Fetch(seqSet, items, messages)
 	}()
 
 	for msg := range messages {
@@ -209,43 +212,48 @@ func checkEmails(cfg Config) {
 		matched := false
 		var bodyText strings.Builder
 
-		for _, literal := range msg.Body {
-			mr, err := mail.CreateReader(literal)
-			if err != nil {
-				continue
+		// Safely get the body reader
+		r := msg.GetBody(section)
+		if r == nil {
+			continue
+		}
+
+		mr, err := mail.CreateReader(r)
+		if err != nil {
+			continue
+		}
+
+		for {
+			p, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				break
 			}
 
-			for {
-				p, err := mr.NextPart()
-				if err == io.EOF {
-					break
-				} else if err != nil {
-					break
+			switch h := p.Header.(type) {
+			case *mail.InlineHeader:
+				contentType, _, _ := h.ContentType()
+				if strings.HasPrefix(contentType, "text/plain") {
+					b, _ := io.ReadAll(p.Body)
+					bodyText.Write(b)
 				}
+			case *mail.AttachmentHeader:
+				filename, _ := h.Filename()
+				if filename != "" && (strings.HasSuffix(strings.ToLower(filename), ".xlsx") || strings.HasSuffix(strings.ToLower(filename), ".xls")) {
+					fileBytes, _ := io.ReadAll(p.Body)
+					sizeMB := int64(len(fileBytes)) / (1024 * 1024)
 
-				switch h := p.Header.(type) {
-				case *mail.InlineHeader:
-					contentType, _, _ := h.ContentType()
-					if strings.HasPrefix(contentType, "text/plain") {
-						b, _ := io.ReadAll(p.Body)
-						bodyText.Write(b)
+					if sizeMB > cfg.MaxFileSizeMB {
+						log.Printf("⚠️ Large attachment skipped: %s (%dMB)", filename, sizeMB)
+						sendNtfy(cfg, "⚠️ Large Attachment Skipped",
+							"Email Subject: "+subject+"\nFile: "+filename+" exceeded size limit. Please check manually!")
+						continue
 					}
-				case *mail.AttachmentHeader:
-					filename, _ := h.Filename()
-					if filename != "" && (strings.HasSuffix(strings.ToLower(filename), ".xlsx") || strings.HasSuffix(strings.ToLower(filename), ".xls")) {
-						fileBytes, _ := io.ReadAll(p.Body)
-						sizeMB := int64(len(fileBytes)) / (1024 * 1024)
 
-						if sizeMB > cfg.MaxFileSizeMB {
-							log.Printf("⚠️ Large attachment skipped: %s (%dMB)", filename, sizeMB)
-							sendNtfy(cfg, "⚠️ Large Attachment Skipped", 
-								"Email Subject: "+subject+"\nFile: "+filename+" exceeded size limit. Please check manually!")
-							continue
-						}
-
-						if scanExcel(fileBytes, cfg) {
-							matched = true
-						}
+					log.Printf("Scanning attachment: %s", filename)
+					if scanExcel(fileBytes, cfg) {
+						matched = true
 					}
 				}
 			}
@@ -269,7 +277,7 @@ func main() {
 	log.Println("Go Placement Scanner Started...")
 
 	for {
-		checkEmails()
-		time.sleep(cfg.CheckInterval)
+		checkEmails(cfg)
+		time.Sleep(cfg.CheckInterval)
 	}
 }
