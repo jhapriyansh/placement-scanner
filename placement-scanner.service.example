@@ -1,0 +1,15 @@
+[Unit]
+Description=Go Placement Email Scanner Service
+After=network.target
+
+[Service]
+Type=simple
+User=debian
+WorkingDirectory=/path-to/placement-scanner
+ExecStart=/path-to/placement-scanner/scanner
+Restart=always
+RestartSec=10
+EnvironmentFile=/path-to/placement-scanner/.env
+
+[Install]
+WantedBy=multi-user.target

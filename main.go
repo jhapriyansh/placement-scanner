@@ -256,8 +256,8 @@ func checkEmails(cfg Config) {
 					sizeMB := int64(len(fileBytes)) / (1024 * 1024)
 
 					if sizeMB > cfg.MaxFileSizeMB {
-						log.Printf("⚠️ Large attachment skipped: %s (%dMB)", filename, sizeMB)
-						sendNtfy(cfg, "⚠️ Large Attachment Skipped",
+						log.Printf("Large attachment skipped: %s (%dMB)", filename, sizeMB)
+						sendNtfy(cfg, "Large Attachment Skipped",
 							"Email Subject: "+subject+"\nFile: "+filename+" exceeded size limit. Please check manually!")
 						continue
 					}
@@ -272,7 +272,7 @@ func checkEmails(cfg Config) {
 
 		if matchesDetails(bodyText.String(), cfg) || matched {
 			log.Printf("Match found! Sending alert for: %s", subject)
-			sendNtfy(cfg, "🎉 Shortlisted: "+subject, "Your details were matched in email or attachment!")
+			sendNtfy(cfg, "Match found!"+subject, "Your details were matched in email or attachment!")
 		}
 
 		saveProcessedUID(msg.Uid)
