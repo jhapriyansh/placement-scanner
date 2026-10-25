@@ -30,7 +30,7 @@ type Config struct {
 	NtfyPass      string
 	CheckInterval time.Duration
 	MaxFileSizeMB int64
-	ScanSince     string
+	MtdDays       int
 }
 
 const StateFile = "processed_uids.json"
@@ -42,11 +42,15 @@ func loadConfig() Config {
 	_ = godotenv.Load()
 	intervalSec, _ := strconv.Atoi(os.Getenv("CHECK_INTERVAL"))
 	if intervalSec <= 0 {
-		intervalSec = 14400 // Default to 4 hours (14400 seconds)
+		intervalSec = 14400 // Default to 4 hours
 	}
 	maxSize, _ := strconv.ParseInt(os.Getenv("MAX_FILE_SIZE_MB"), 10, 64)
 	if maxSize <= 0 {
 		maxSize = 10
+	}
+	mtdDays, _ := strconv.Atoi(os.Getenv("MTD_DAYS"))
+	if mtdDays <= 0 {
+		mtdDays = 3 // Default MTD to 3 days
 	}
 
 	return Config{
@@ -61,7 +65,7 @@ func loadConfig() Config {
 		NtfyPass:      os.Getenv("NTFY_PASS"),
 		CheckInterval: time.Duration(intervalSec) * time.Second,
 		MaxFileSizeMB: maxSize,
-		ScanSince:     os.Getenv("SCAN_SINCE"),
+		MtdDays:       mtdDays,
 	}
 }
 
@@ -89,11 +93,10 @@ func isProcessed(uid uint32, state ProcessedState) bool {
 	return false
 }
 
-func saveProcessedUID(uid uint32) {
+func saveProcessedUID(uid uint32, mtdDays int) {
 	state := loadProcessedState()
 	todayStr := time.Now().Format("2006-01-02")
 
-	// Avoid duplicates
 	found := false
 	for _, u := range state[todayStr] {
 		if u == uid {
@@ -105,8 +108,8 @@ func saveProcessedUID(uid uint32) {
 		state[todayStr] = append(state[todayStr], uid)
 	}
 
-	// Clean up: Keep only records from the last 3 days to prevent infinite file growth
-	cutoffDate := time.Now().AddDate(0, 0, -3)
+	// Rolling cleanup matching the MTD days configured in env
+	cutoffDate := time.Now().AddDate(0, 0, -mtdDays)
 	cleanState := make(ProcessedState)
 	for dateStr, uids := range state {
 		parsedDate, err := time.Parse("2006-01-02", dateStr)
@@ -201,13 +204,9 @@ func checkEmails(cfg Config) {
 
 	criteria := imap.NewSearchCriteria()
 	criteria.WithoutFlags = []string{imap.DeletedFlag}
-
-	if cfg.ScanSince != "" {
-		sinceDate, err := time.Parse("2006-01-02", cfg.ScanSince)
-		if err == nil {
-			criteria.Since = sinceDate
-		}
-	}
+	
+	// Dynamic MTD window based on env variable
+	criteria.Since = time.Now().AddDate(0, 0, -cfg.MtdDays)
 
 	uids, err := c.Search(criteria)
 	if err != nil {
@@ -296,7 +295,7 @@ func checkEmails(cfg Config) {
 			sendNtfy(cfg, "🎉 Shortlisted: "+subject, "Your details were matched in email or attachment!")
 		}
 
-		saveProcessedUID(msg.Uid)
+		saveProcessedUID(msg.Uid, cfg.MtdDays)
 	}
 
 	if err := <-done; err != nil {
@@ -306,10 +305,7 @@ func checkEmails(cfg Config) {
 
 func main() {
 	cfg := loadConfig()
-	log.Println("Go Placement Scanner Started...")
-	if cfg.ScanSince != "" {
-		log.Printf("Only scanning emails from %s onward", cfg.ScanSince)
-	}
+	log.Printf("Go Placement Scanner Started (MTD: %d Days Window)...", cfg.MtdDays)
 
 	for {
 		checkEmails(cfg)
