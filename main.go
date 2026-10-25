@@ -35,11 +35,14 @@ type Config struct {
 
 const StateFile = "processed_uids.json"
 
+// State structure: map[YYYY-MM-DD][]uint32
+type ProcessedState map[string][]uint32
+
 func loadConfig() Config {
 	_ = godotenv.Load()
 	intervalSec, _ := strconv.Atoi(os.Getenv("CHECK_INTERVAL"))
 	if intervalSec <= 0 {
-		intervalSec = 300
+		intervalSec = 14400 // Default to 4 hours (14400 seconds)
 	}
 	maxSize, _ := strconv.ParseInt(os.Getenv("MAX_FILE_SIZE_MB"), 10, 64)
 	if maxSize <= 0 {
@@ -62,36 +65,57 @@ func loadConfig() Config {
 	}
 }
 
-func loadProcessedUIDs() map[uint32]bool {
-	uids := make(map[uint32]bool)
+func loadProcessedState() ProcessedState {
+	state := make(ProcessedState)
 	if _, err := os.Stat(StateFile); os.IsNotExist(err) {
-		return uids
+		return state
 	}
 	data, err := os.ReadFile(StateFile)
 	if err != nil {
-		return uids
+		return state
 	}
-	var uidList []uint32
-	if json.Unmarshal(data, &uidList) == nil {
-		for _, uid := range uidList {
-			uids[uid] = true
+	_ = json.Unmarshal(data, &state)
+	return state
+}
+
+func isProcessed(uid uint32, state ProcessedState) bool {
+	for _, uids := range state {
+		for _, u := range uids {
+			if u == uid {
+				return true
+			}
 		}
 	}
-	return uids
+	return false
 }
 
 func saveProcessedUID(uid uint32) {
-	uids := loadProcessedUIDs()
-	uids[uid] = true
-	var list []uint32
-	for k := range uids {
-		list = append(list, k)
+	state := loadProcessedState()
+	todayStr := time.Now().Format("2006-01-02")
+
+	// Avoid duplicates
+	found := false
+	for _, u := range state[todayStr] {
+		if u == uid {
+			found = true
+			break
+		}
 	}
-	// Keep last 1000 UIDs
-	if len(list) > 1000 {
-		list = list[len(list)-1000:]
+	if !found {
+		state[todayStr] = append(state[todayStr], uid)
 	}
-	data, _ := json.Marshal(list)
+
+	// Clean up: Keep only records from the last 3 days to prevent infinite file growth
+	cutoffDate := time.Now().AddDate(0, 0, -3)
+	cleanState := make(ProcessedState)
+	for dateStr, uids := range state {
+		parsedDate, err := time.Parse("2006-01-02", dateStr)
+		if err == nil && (parsedDate.After(cutoffDate) || parsedDate.Equal(cutoffDate)) {
+			cleanState[dateStr] = uids
+		}
+	}
+
+	data, _ := json.Marshal(cleanState)
 	_ = os.WriteFile(StateFile, data, 0644)
 }
 
@@ -173,18 +197,15 @@ func checkEmails(cfg Config) {
 		return
 	}
 
-	processed := loadProcessedUIDs()
+	state := loadProcessedState()
 
 	criteria := imap.NewSearchCriteria()
 	criteria.WithoutFlags = []string{imap.DeletedFlag}
-	
-	// Apply date filter if specified in .env
+
 	if cfg.ScanSince != "" {
 		sinceDate, err := time.Parse("2006-01-02", cfg.ScanSince)
 		if err == nil {
 			criteria.Since = sinceDate
-		} else {
-			log.Printf("Invalid SCAN_SINCE format (%s). Use YYYY-MM-DD. Proceeding without date filter.", cfg.ScanSince)
 		}
 	}
 
@@ -212,7 +233,7 @@ func checkEmails(cfg Config) {
 	}()
 
 	for msg := range messages {
-		if processed[msg.Uid] {
+		if isProcessed(msg.Uid, state) {
 			continue
 		}
 
@@ -256,8 +277,8 @@ func checkEmails(cfg Config) {
 					sizeMB := int64(len(fileBytes)) / (1024 * 1024)
 
 					if sizeMB > cfg.MaxFileSizeMB {
-						log.Printf("Large attachment skipped: %s (%dMB)", filename, sizeMB)
-						sendNtfy(cfg, "Large Attachment Skipped",
+						log.Printf("⚠️ Large attachment skipped: %s (%dMB)", filename, sizeMB)
+						sendNtfy(cfg, "⚠️ Large Attachment Skipped",
 							"Email Subject: "+subject+"\nFile: "+filename+" exceeded size limit. Please check manually!")
 						continue
 					}
@@ -272,7 +293,7 @@ func checkEmails(cfg Config) {
 
 		if matchesDetails(bodyText.String(), cfg) || matched {
 			log.Printf("Match found! Sending alert for: %s", subject)
-			sendNtfy(cfg, "Match found!"+subject, "Your details were matched in email or attachment!")
+			sendNtfy(cfg, "🎉 Shortlisted: "+subject, "Your details were matched in email or attachment!")
 		}
 
 		saveProcessedUID(msg.Uid)
